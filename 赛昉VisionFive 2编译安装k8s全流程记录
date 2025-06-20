@@ -1,0 +1,169 @@
+赛昉VisionFive 2编译安装k8s全流程记录
+一、	硬件环境
+1.运行环境要求
+•	Linux内核版本：Linux 5.15
+•	操作系统：Debian 12（202405）
+•	硬件版本：昉•星光 2
+•	SoC：昉•惊鸿-7110
+2.硬件准备
+ 
+二、	镜像烧录
+1．官方系统镜像地址：
+https://pan.baidu.com/share/init?surl=46_K7BNT0cBfMUeTpvb3uA&pwd=csx2
+选取sd目录下的系统镜像，本次编译安装k8s使用的系统镜像版本为202405，内核版本5.15，k8s版本1.23.9。
+2. 系统烧录
+使用系统烧录工具将下载好的系统镜像烧录至sd卡。
+3. 系统启动
+ 
+ 
+使用mobaxterm 串口进入系统：
+ 
+4. 系统登录
+输入对应的账号和密码：
+Username（用户名）: root / user（仅202303及以后的系统有的普通用户）
+Password（密码）: starfive
+5. 系统配置
+扩展文件系统确保内存卡所有存储都可用/查看ip/ssh连接设置/连接wifi设置参考链接
+https://www.waveshare.net/wiki/VisionFive2#Debian_.E7.B3.BB.E7.BB.9F.E5.AE.89.E8.A3.85
+三、	编译内核安装docker
+1.	编译内核
+赛昉科技默认的Debian内核不支持Docker所需的CGROUP、BRIDGE等功能，因此需要编译内核。（安装docker或其他容器运行时均需编译内核）
+（1）查看所需内核选项：下载docker开源脚本，查看所缺的内核选项。
+脚本地址：
+https://github.com/moby/moby/blob/master/contrib/check-config.sh
+（2）下载交叉编译组件：（建议使用ubuntu系统交叉编译，本地编译会出现系统启动异常）
+sudo apt-get install build-essential linux-source bc kmod cpio flex libncurses5-dev libelf-dev libssl-dev dwarves bison git gcc-riscv64-linux-gnu g++-riscv64-linux-gnu vim tree
+（3）下载内核代码，准备编译
+git clone https://github.com/starfive-tech/linux.git
+（4）参考链接https://rvspace.org/en/project/Debian_Roadmap，查看烧录系统的内核源码分支，以202405版本Debian为例，执行 git checkout JH7110_VF2_515_v5.12.0
+（5）修改内核配置
+执行make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- menuconfig
+具体需添加的内核选项参考链接：
+https://doc.rvspace.org/VisionFive2/Application_Notes/VisionFive2_AN_Docker/JH7110_Solution/NAS/needed_kernel_options.html
+（6）交叉编译内核
+执行make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- bindeb-pkg -j$(nproc)  
+KDEB_COMPRESS=xz LOCALVERSION='local_version'
+（7）编译完成后，会在上一级生成以下文件和所需的设备树（dtb）文件：
+ 
+ 
+将三个deb包和dtb设备树文件拷贝至jh7110开发板设备上。
+（8）安装编译好的内核
+在jh7110开发板设备上执行：
+dpkg -i linux-headers-5.15.0-performance_5.15.0-performance-1_riscv64.deb
+dpkg -i linux-image-5.15.0-performance_5.15.0-performance-1_riscv64.deb
+dpkg -i linux-libc-dev_5.15.0-performance-1_riscv64.deb
+或者，执行dpkg -i *.deb
+（9）更新设备树文件
+将步骤（7）生成的jh7110-starfive-visionfive-2-v1.3b.dtb拷贝至/boot/dtbs/starfive目录下，（若无该目录，新建一个）
+修改配置文件vim extlinux/extlinux.conf，将该文件下的fdtdir 路径修改为真实路径例如：fdtdir /dtbs/6.6.20，新编译生成的内核启动路径为：fdtdir /dtbs
+注：步骤（9）一定要修改，且必须在步骤（9）执行完后再reboot设备，否则将无法启动系统，需再次烧录系统镜像，从新开始配置。
+2.	安装docker
+执行sudo apt install docker.io –y
+重启系统
+3.	运行docker
+顺序执行命令：
+dockerd
+systemctl start docker
+查看docker运行状态：systemctl status docker
+四、	编译k8s组件
+1.	主节点安装k8s及jh7110开发板系统配置参考链接：
+https://blog.csdn.net/weixin_44084452/article/details/130797232
+jh7110开发板安装go，由于官方要求不能执行apt update，可直接下载安装go,在内核版本5.15里，直接下载安装的go版本为1.19.4。
+2.	jh7110开发板编译k8s组件
+（1）下载k8s指定版本源码：
+wget https://github.com/kubernetes/kubernetes/archive/refs/tags/v1.23.9.tar.gz
+（2）编译组件及错误处理
+解压并进入到kubernetes-1.23.9目录
+执行编译kubelet:
+KUBE_BUILD_PLATFORMS=linux/loong64 make all WHAT=cmd/kubelet
+注：在k8s较高版本编译时，出现的不支持riscv架构信息可忽略，不影响组件使用；
+K8s较低版本编译时，需修改k8s源码具体如下：
+（1）修改hack/lib/golang.sh文件
+在KUBE_SUPPORTED_SERVER_PLATFORMS ， KUBE_SUPPORTED_NODE_PLATFORMS ，KUBE_SUPPORTED_CLIENT_PLATFORMS，KUBE_SUPPORTED_TEST_PLATFORMS分别添加上linux/riscv64
+（2）修改hack/lib/util.sh文件
+在kube::util::host_arch() 里添加 
+riscv64*)
+  host_arch= riscv64
+  ;;
+（3）修改hack/local-up-cluster.sh文件
+riscv64*)
+  host_arch= riscv64
+  ;;
+修改结束后再次编译
+K8s1.22.x版本编译完后，kubeadm组件会报源码错误，建议最低使用1.23.x版本。
+执行编译kubeadm/kubectl
+KUBE_BUILD_PLATFORMS=linux/loong64 make all WHAT=cmd/kubeadm
+KUBE_BUILD_PLATFORMS=linux/loong64 make all WHAT=cmd/kubectl
+（3）
+将编译成功后的组件拷贝至/usr/bin路径
+组件目录：/kubernetes-1.23.9/_output/local/bin/linux/riscv64
+（4）执行sudo chmod +x /usr/bin/kubeadm /usr/bin/kubectl /usr/bin/kubelet
+五、节点加入集群
+1. 前提条件：
+（1）master节点正确部署安装k8s，kubeadm init初始化集群完成
+（2）jh7110开发板节点拉取对应K8S版本所需镜像（可执行kubeadm config images list查看所需镜像）
+（3）手动拉取所需镜像至jh7110开发板节点，由于dockerhub官网对国内访问限制，现有两种方式可拉取镜像：
+方法一：部署gost,通过gost即可通过dockerhub官网拉取镜像。
+方法二：通过国内dockerhub加速镜像源拉取
+国内docker镜像源参考地址：https://www.cnblogs.com/wwkjs/p/18757415/dockerhub
+ 
+2. jh7110开发板节点加入集群
+（1）在首次加入集群时，执行kubeadm join命令会出现内核配置选择缺失，需再次编译内核将所缺的内核选项配置好。（此时可不执行make menuconfig，直接编辑内核源码目录下的.config文件，将所缺的内核选项设置为y）
+（2）jh7110开发板节点执行kubeadm reset后，再次执行kubeadm join命令，加入集群成功；
+（3）master节点部署网络插件flannel:
+执行kubectl apply –f kube-flannel.yml后，发现主节点kube-flannel-pod可正常启动，jh7110kube-flannel-pod一直处于反复重启状态，查看pod日志发现报错：
+注：flannel默认使用 VXLAN 封装跨节点 Pod 流量，jh7110开发板内核不支持该内核选项，需再次编译内核将VXLAN配置好。
+Failed to create SubnetManager: error retrieving pod spec for 'kube-flannel/kube-flannel-ds-gzqqn': Get "https://10.96.0.1:443/api/v1/namespaces/kube-flannel/pods/kube-flannel-ds-gzqqn ": dial tcp 10.96.0.1:443: i/o timeout
+执行curl -k https://10.96.0.1:443发现访问不通过。需通过手动添加路由表，解决该问题:
+执行命令ip route add 10.96.0.0/16 via 192.168.31.214 dev wlan0（其中ip为主节点ip,dev后为主节点使用的网卡名称）。
+执行kubectl delete –f kube-flannel.yml删除部署的网络插件后，再次执行kubectl apply –f kube-flannel.yml发现jh7110开发板节点上的kube-flannel-pod正常运行。
+（4）准备应用镜像，测试集群部署应用pod：
+在riscv开发板节点上构建riscv架构的应用基础镜像，创建应用yml文件，执行部署后，发现应用pod一直处于创建状态，查看describe pod后，存在报错：
+Failed to create pod sandbox: rpc error: code = Unknown desc = failed to set up sandbox container "568efb4e4c91c7d98c18dce787576aea2487a2e1eab3211259af7bd76eab2a31" network for pod "flask-web-app-766c96b8ff-wmswt": networkPlugin cni failed to set up pod "flask-web-app-766c96b8ff-wmswt_default" network: failed to create bridge "cni0": could not add "cni0": operation not supported
+在jh7110开发板节点上执行ifconfig，发现确实无cni0网桥。此时，需手动创建网桥：
+sudo ip link delete cni0
+sudo ip addr flush dev cni0
+sudo ip link add cni0 type bridge
+sudo ip link set cni0 up
+sudo ip addr add 10.244.1.1/24 dev cni0
+重启kubelet，sudo systemctl restart kubelet，然后在master节点上查看应用pod状态，已处于运行状态如下：
+ 
+注：通过手动添加路由表和网桥的方式可临时解决jh7110开发板网络配置问题，当设置重启后还需再次手动添加路由表和网桥。
+下面将手动添加路由表和网桥修改为systemd 服务来管理
+（1）	cni0.service：
+	sudo nano /etc/systemd/system/cni0.service
+	添加服务配置：
+[Unit]
+Description=Create cni0 bridge
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ip link add cni0 type bridge
+ExecStart=/usr/bin/ip link set cni0 up
+ExecStart=/usr/bin/ip addr add 10.244.1.1/24 dev cni0
+
+[Install]
+WantedBy=multi-user.target
+	保存并退出。
+	启用并启动服务：
+sudo systemctl enable cni0.service
+sudo systemctl start cni0.service
+（2）	add-route.service
+	sudo nano /etc/systemd/system/add-route.service
+	添加服务配置
+[Unit]
+Description=Add custom route
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ip route add 10.96.0.0/16 via 192.168.31.214 dev wlan0
+
+[Install]
+WantedBy=multi-user.target
+	保存并退出
+	启用并启动服务：
+sudo systemctl enable add-route.service
+sudo systemctl start add-route.service
+注：开启add-route.service和cni0.service后，需重启kubelet。
